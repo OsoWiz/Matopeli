@@ -4,31 +4,24 @@
 #include <immintrin.h>
 #include <Windows.h>
 #include <sys/timeb.h>
+
+#ifndef NDEBUG
 //debug
 #include <debugapi.h>
-#ifdef NDEBUG
-static const boolean debug = 0;
-#else 
 static const boolean debug = 1;
+#else 
+static const boolean debug = 0;
 #define DEBUG_MODE
 #endif
-
-typedef unsigned short uint16_t;
-
-#include "Utility.h"
 
 const char luokannimi[] = "Matoikkuna";
 
 const unsigned short dirMask = 0b1100000000000000; // points to the direction
 const unsigned short prevDirMask = 0b0011000000000000; // points to the previous direction
 const unsigned short posMask = 0b0000111111111111; // position
-const unsigned short bitMask16 = (2 << 16) - 1;
-const unsigned char north = 0;
-const unsigned char east = 1;
-const unsigned char south = 2;
-const unsigned char west = 3;
+const unsigned short bitMask16 = (2u << 16u) - 1u;
 const unsigned short rowSize = 16; // rows are 16 bytes long
-const unsigned short sColSize = 4; // single column contains 4 directions. Meaning
+const unsigned short sColSize = 4; // single column contains 4 directions.
 
 
 // first 2 bits represent 4 directions, and last 14 the position
@@ -38,6 +31,16 @@ unsigned short bait = 0; // bait location
 static unsigned char occupancy[64 * 16]; // basically 64 rows of 16 bytes, each byte representing 4 columns (4 * 16 = 64 total rows)
 unsigned short posSeed = 1; // seed for the position of the worm
 unsigned short rounds = 1; // rounds to roll the lfsr
+
+#ifndef NDEBUG
+/**
+ * @brief Opens the console
+*/
+void OpenConsole() {
+	AllocConsole();
+	FILE* filu = freopen("CONOUT$", "w+", stdout);
+}
+#endif // !NDEBUG
 
 /**
  * @brief Returns a 16 bit random number using a linear feedback shift register
@@ -76,6 +79,7 @@ inline unsigned short getPrevDirbits(unsigned short dir)
 	return (dir & prevDirMask) >> 12u;
 }
 
+#ifndef NDEBUG
 
 /**
  * @brief Prints given direction
@@ -98,6 +102,7 @@ void printDir(unsigned int dir) {
 	}
 	printf("\n");
 }
+#endif // !NDEBUG
 
 /**
  * @brief Sets the direction of the worm
@@ -105,13 +110,9 @@ void printDir(unsigned int dir) {
 */
 inline void setWormDir(unsigned short newDir)
 {
-	unsigned short nDir = getDirbits(newDir);
 	unsigned short dirCase = getDirbits(newDir) ^ getDirbits(direction);
 	if (dirCase != 2u) // we can change direction if and only if the new direction is not the opposite of the current direction
 	{
-		printf("Direction changed to: ");
-		printDir(nDir);
-		printDir(2 ^ nDir);
 		direction = (newDir & dirMask) | (direction & posMask) | ((2 ^ getDirbits(newDir)) << 12);
 	}
 }
@@ -155,40 +156,6 @@ inline void moveCoords(unsigned short dir, unsigned char* x, unsigned char* y)
 	*x = nx;
 	*y = ny;
 }
-
-
-// moves the worm 1 tile in the direction it's facing
-void moveWorm()
-{
-	// get the direction
-	unsigned short dir = getDirbits(direction);
-	unsigned short prevDir = getPrevDirbits(direction);
-	// get the position
-	unsigned short pos = direction & posMask;
-	// decode the position
-	unsigned char y = 0, x = 0, by = 0, bx = 0;
-	int ret = getLocation(pos, &x, &y);
-	int bret = getLocation(bait, &bx, &by);
-
-	moveCoords(dir, &x, &y);
-
-	if (!(x - bx) && !(y - by))
-	{
-		// if the worm is on the bait, move the bait to a new location
-		raffleBait(1);
-		// make the worm longer by 1
-		length++;
-	}
-	printf("Previous snake part is:\n");
-	printDir(prevDir);
-	unsigned short writePos = rowSize * y + x / sColSize;
-	unsigned char dirBits = (x % 4u) * 2u; // offset of the direction inside a single byte
-	unsigned char current = occupancy[writePos];
-	unsigned char mask = ~(3u << dirBits);
-	occupancy[writePos] = (prevDir << dirBits) + (current & mask);  // write the previous direction to the occupancy
-	// set the new position
-	direction = (dir << 14) | (prevDir << 12) | (y * rowSize + x); // previous direction does not change when
-}
 /**
  * @brief Decodes the position from the 16 bit integer
  * @param pos to decode
@@ -209,6 +176,64 @@ inline int getLocation(unsigned short pos, unsigned char* x, unsigned char* y)
 
 	return 0;
 }
+/**
+ * @brief Checks whether the worm is folded in onself. 1 for yes, 0 for no.
+ * @return int indicating whether the worm is inside itself.
+*/
+int checkWorm()
+{
+	unsigned char xi = 0, yi = 0, wx = 0, wy = 0;
+	unsigned short prevDir = getPrevDirbits(direction);
+	getLocation(direction, &wx, &wy);
+	xi = wx;
+	yi = wy;
+	unsigned short i = 1;
+	do
+	{
+		moveCoords(prevDir, &xi, &yi); // move once before loop. We don't want to detect head collision on itself.
+		// get new previous direction
+		unsigned short readPos = rowSize * yi + xi / sColSize;
+		unsigned char dirBits = (xi % 4) * 2; // offset of the direction inside a single byte
+		prevDir = (occupancy[readPos] >> dirBits) & 3u;
+
+		if (!(wx - xi) && !(wy - yi))
+			return 1;
+		i++;
+	} while (i < length);
+
+	return 0;
+}
+
+
+// moves the worm 1 tile in the direction it's facing
+void moveWorm()
+{
+	// get the direction
+	unsigned short dir = getDirbits(direction);
+	unsigned short prevDir = getPrevDirbits(direction);
+	// decode the position
+	unsigned char y = 0, x = 0, by = 0, bx = 0;
+	int ret = getLocation(direction, &x, &y);
+	int bret = getLocation(bait, &bx, &by);
+
+	moveCoords(dir, &x, &y);
+
+	if (!(x - bx) && !(y - by))
+	{
+		// if the worm is on the bait, move the bait to a new location
+		raffleBait(1);
+		// make the worm longer by 1
+		length++;
+	}
+
+	unsigned short writePos = rowSize * y + x / sColSize; // directions are encoded differently
+	unsigned char dirBits = (x % 4u) * 2u; // offset of the direction inside a single byte
+	unsigned char current = occupancy[writePos];
+	unsigned char mask = ~(3u << dirBits);
+	occupancy[writePos] = (prevDir << dirBits) + (current & mask);  // write the previous direction to the occupancy
+	// set the new position
+	direction = (dir << 14) | (prevDir << 12) | (y * 64 + x); // previous direction does not change when moving
+}
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
@@ -216,7 +241,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 	switch (msg)
 	{
 		case WM_KEYDOWN:
-			printf("Keypress detected!");
 			// Deal with user input
 			switch (wParam)
 			{
@@ -244,7 +268,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 			unsigned char x = 0, y = 0;
 
 			int ret = getLocation(direction, &x, &y);
-			unsigned char prevDirection = getPrevDirbits(direction);
+			unsigned short prevDirection = getPrevDirbits(direction);
 			for (unsigned short i = 0; i < length; i++)
 			{
 				RECT pepe = { x * 10, y * 10, (x + 1) * 10, (y + 1) * 10 };
@@ -252,9 +276,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 				FillRect(hdc, &pepe, (HBRUSH)(CreateSolidBrush(RGB(255, 0, 0)))); // paint if worm there?
 				moveCoords(prevDirection, &x, &y); // move coords to the previous direction
 				// get new previous direction
-				unsigned short writePos = rowSize * y + x / sColSize;
+				unsigned short readPos = rowSize * y + x / sColSize;
 				unsigned char dirBits = (x % 4) * 2; // offset of the direction inside a single byte
-				prevDirection = (occupancy[writePos] >> dirBits) & 3u;
+				prevDirection = (occupancy[readPos] >> dirBits) & 3u;
 			}
 			// draw bait
 			unsigned char baitX = bait % 64;
@@ -281,9 +305,9 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
 {
 	bait = 5;
 
-	if (debug)
-		OpenConsole();
-
+#ifdef DEBUG
+	OpenConsole();
+#endif // DEBUG
 
 	// generate random number using rdseed32
 	unsigned randomNumber;
@@ -294,8 +318,6 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
 	rounds = (unsigned short)(randomNumber >> 16u) & bitMask16;
 	// roll the lfsr
 	raffleBait(rounds);
-
-	printf("Bait rolled: %d x, %d y\n", bait % 64, bait / 64);
 
 	direction = 0;
 	// set direction to south
@@ -332,7 +354,7 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
 		luokannimi,
 		"Matopeli",
 		WS_OVERLAPPEDWINDOW,
-		CW_USEDEFAULT, CW_USEDEFAULT, 640, 640,
+		CW_USEDEFAULT, CW_USEDEFAULT, 660, 660,
 		NULL, NULL, hInstance, NULL);
 
 	if (hwnd == NULL)
@@ -347,7 +369,7 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
 
 
 	// Create tickrate for the game
-	int timetresholdms = 200; // 0.2 seconds = 200ms
+	time_t timetresholdms = 100; // milliseconds
 	struct timeb start, end;
 	ftime(&start);
 	ftime(&end);
@@ -364,30 +386,23 @@ int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance,
 		}
 
 		// get time diff in milliseconds
-		int diff = 1000 * (end.time - start.time) + (end.millitm - start.millitm);
+		time_t diff = 1000 * (end.time - start.time) + (end.millitm - start.millitm);
 
 		// check if the time has passed
 		if (timetresholdms < diff)
 		{
-			// printf("Time passed: %d\n", diff);
 			//update the game
 			moveWorm();
 			InvalidateRect(hwnd, NULL, TRUE);
-			//UpdateWindow(hwnd);
-			//// print direction after update
-			//unsigned int x = direction & posMask;
-			//unsigned int y = x / 64;
-			//unsigned int dir = getDirbits(direction);
-
-			//printf("Worm position: x: %d, y: %d\n", x % 64, y);
-			//printf("Worm direction: ");
-			//printDir(dir);
+			UpdateWindow(hwnd);
+			// check whether the move we made was illegal
+			int ret2 = checkWorm();
+			if (ret2)
+				exit(0);
 
 			start = end;
 		}
 		ftime(&end);
 	}
 	return Msg.wParam;
-
-
 }
